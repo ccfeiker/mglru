@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKLOAD_BIN="${WORKLOAD_BIN:-/root/emm-test-project/file-anon-mix-pressure/file_anon_mix_pressure}"
 TEST_FILE="${TEST_FILE:-/root/mixfile.img}"
 RESULT_DIR="${RESULT_DIR:-$SCRIPT_DIR/train_runs}"
-TEST_FILE_SIZE_MB="${TEST_FILE_SIZE_MB:-1024}"
+TEST_FILE_SIZE_MB="${TEST_FILE_SIZE_MB:-4096}"
 DEFAULT_WORKERS="${DEFAULT_WORKERS:-$(nproc)}"
 
 require_file() {
@@ -57,12 +57,16 @@ print_usage() {
     cat <<'EOF'
 Usage:
   ./run_file_anon_mix_matrix.sh            # run all cases
-  ./run_file_anon_mix_matrix.sh A01        # run a single case
+  ./run_file_anon_mix_matrix.sh KF01       # run a single case
   ./run_file_anon_mix_matrix.sh --list     # list all case IDs
 
 Notes:
   - This script no longer applies any cgroup limits.
   - The mem_mb column is kept only as metadata/a QEMU memory hint.
+  - The default case set is tuned for a ~4GB VM.
+  - These cases are intentionally smoothed to bias reclaim toward kswapd
+    and reduce direct reclaim bursts, but they cannot guarantee zero
+    direct reclaim under all runtime conditions.
 EOF
 }
 
@@ -98,43 +102,12 @@ main() {
         run_case $case_line
         matched=1
     done <<'EOF'
-#case_id memory.max swappiness anon_mb file_mb anon_workers file_workers reader_sleep_us anon_wait_s
-F01 1536 1 512 3072 2 1 1500000 1
-F02 1536 5 768 3072 2 1 1200000 1
-F03 2048 1 512 4096 2 1 1500000 1
-F04 2048 5 768 4096 2 1 1000000 1
-F05 2560 5 1024 4096 2 2 800000 1
-F06 2560 10 1024 5120 2 2 800000 1
-A01 1536 20 1024 512
-A02 1536 60 1024 512
-A03 1536 100 1024 512
-A04 1536 20 1152 512
-A05 1536 60 1152 512
-A06 1536 100 1152 512
-A07 1536 20 1024 768
-A08 1536 60 1024 768
-A09 1536 100 1024 768
-A10 1536 60 1280 640
-B01 2048 20 1280 512
-B02 2048 60 1280 512
-B03 2048 100 1280 512
-B04 2048 20 1536 768
-B05 2048 60 1536 768
-B06 2048 100 1536 768
-B07 2048 20 1792 768
-B08 2048 60 1792 768
-B09 2048 100 1792 768
-B10 2048 60 1536 1024
-C01 2560 20 1536 768
-C02 2560 60 1536 768
-C03 2560 100 1536 768
-C04 2560 20 1792 1024
-C05 2560 60 1792 1024
-C06 2560 100 1792 1024
-C07 2560 20 2048 1024
-C08 2560 60 2048 1024
-C09 2560 100 2048 1024
-C10 2560 60 2304 1024
+# case_id qemu_mem_hint_mb swappiness anon_mb file_mb anon_workers file_workers reader_sleep_us anon_wait_s
+# KF01: prefer file reclaim under low swappiness, with smooth pressure for kswapd.
+# KA01: prefer anon reclaim under moderately high swappiness, but keep pressure
+#       smooth enough to avoid stalling a ~4GB guest.
+KF01 4096 5 768 3072 1 1 1200000 1
+KA01 4096 120 1536 768 1 1 1200000 1
 EOF
 
     if [[ "$selected_case" == "--list" ]]; then

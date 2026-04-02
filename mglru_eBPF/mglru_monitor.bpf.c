@@ -27,6 +27,15 @@ struct evict_state {
     int type;
 };
 
+struct mem_cgroup_id___local {
+    int id;
+};
+
+struct mem_cgroup___local {
+    struct cgroup_subsys_state css;
+    struct mem_cgroup_id___local id;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 24);
@@ -59,6 +68,21 @@ struct {
     __type(key, u32);
     __type(value, struct evict_state);
 } evict_scratch SEC(".maps");
+
+static __always_inline u64 get_memcg_id(struct mem_cgroup *memcg)
+{
+    struct mem_cgroup___local *m;
+    int id = 0;
+
+    if (!memcg)
+        return 0;
+
+    m = (void *)memcg;
+    if (bpf_probe_read_kernel(&id, sizeof(id), &m->id.id))
+        return 0;
+
+    return (u64)id;
+}
 
 static __always_inline void copy_snapshot(struct mglru_lru_gen_folio_snapshot *dst,
                                           const struct mglru_lru_gen_folio_snapshot *src)
@@ -118,9 +142,7 @@ int BPF_KPROBE(try_to_shrink_lruvec_enter, struct lruvec *lruvec, struct scan_co
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tid = (u32)pid_tgid;
     u32 zero = 0;
-    struct mem_cgroup *memcg;
-    struct cgroup_subsys_state *css;
-    struct cgroup *cgrp;
+    struct mem_cgroup *target_memcg;
     struct try_sample *sample;
 
     if (!lruvec || !sc)
@@ -130,17 +152,10 @@ int BPF_KPROBE(try_to_shrink_lruvec_enter, struct lruvec *lruvec, struct scan_co
     if (!sample)
         return 0;
 
-    memcg = BPF_CORE_READ(sc, target_mem_cgroup);
-    css = NULL;
-    cgrp = NULL;
-    if (memcg) {
-        css = (struct cgroup_subsys_state *)memcg;
-        cgrp = BPF_CORE_READ(css, cgroup);
-    }
-
+    target_memcg = BPF_CORE_READ(sc, target_mem_cgroup);
     sample->lruvec = lruvec;
     sample->sc = sc;
-    sample->memcg_id = cgrp ? BPF_CORE_READ(cgrp, kn, id) : 0;
+    sample->memcg_id = get_memcg_id(target_memcg);
     sample->trigger_tgid = (u32)(pid_tgid >> 32);
     sample->trigger_tid = tid;
     bpf_get_current_comm(sample->trigger_comm, sizeof(sample->trigger_comm));
