@@ -106,8 +106,10 @@ main() {
 # KF01: prefer file reclaim under low swappiness, with smooth pressure for kswapd.
 # KA01: prefer anon reclaim under moderately high swappiness, but keep pressure
 #       smooth enough to avoid stalling a ~4GB guest.
-KF01 4096 5 768 3072 1 1 1200000 1
-KA01 4096 120 1536 768 1 1 1200000 1
+KF01 4096 5 768 3072 1 1 4000000 1
+KF02 4096 60 768 3072 1 1 4000000 1
+KA01 4096 120 1536 2048 1 1 120000 4
+KA02 4096 60 1536 2048 1 1 120000 4
 EOF
 
     if [[ "$selected_case" == "--list" ]]; then

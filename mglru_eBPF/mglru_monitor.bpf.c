@@ -9,12 +9,27 @@ char LICENSE[] SEC("license") = "GPL";
 struct try_sample {
     struct lruvec *lruvec;
     struct scan_control *sc;
+    u64 session_id;
     u64 memcg_id;
     u32 trigger_tgid;
     u32 trigger_tid;
     char trigger_comm[MGLRU_COMM_LEN];
     int swappiness;
+    int priority;
+    int reclaim_idx;
+    int order;
+    u32 may_writepage;
+    u32 may_unmap;
+    u64 gfp_mask;
+    u64 nr_to_reclaim;
+    u32 replay_seq;
+    u32 evict_round;
     u32 evict_folios_calls;
+    u32 isolate_calls[MGLRU_MAX_TYPES];
+    unsigned long long isolated_pages[MGLRU_MAX_TYPES];
+    u64 cached_min_seq_anon;
+    u64 cached_min_seq_file;
+    u64 cached_max_seq;
     unsigned long long reclaimed_pages[MGLRU_MAX_TYPES];
     struct mglru_lru_gen_folio_snapshot before;
 };
@@ -24,6 +39,8 @@ struct evict_state {
     struct scan_control *sc;
     int *type_scanned;
     long nr_reclaimed_before;
+    int isolate_ret;
+    u32 evict_round;
     int type;
 };
 
@@ -136,6 +153,60 @@ static __always_inline void snapshot_lru_gen_folio(
     bpf_core_read(dst->refaulted, sizeof(dst->refaulted), &lrugen->refaulted);
 }
 
+static __always_inline void refresh_replay_position(struct try_sample *sample,
+                                                    struct lruvec *lruvec)
+{
+    if (!sample || !lruvec)
+        return;
+
+    sample->cached_min_seq_anon = BPF_CORE_READ(lruvec, lrugen.min_seq[0]);
+    sample->cached_min_seq_file = BPF_CORE_READ(lruvec, lrugen.min_seq[1]);
+    sample->cached_max_seq = BPF_CORE_READ(lruvec, lrugen.max_seq);
+}
+
+static __always_inline void emit_replay_event(struct try_sample *sample,
+                                              struct evict_state *state,
+                                              unsigned int step_kind)
+{
+    struct mglru_replay_event *e;
+
+    if (!sample)
+        return;
+
+    e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e)
+        return;
+
+    e->kind = MGLRU_EVENT_REPLAY_STEP;
+    e->step_kind = step_kind;
+    e->session_id = sample->session_id;
+    e->ts_ns = bpf_ktime_get_ns();
+    e->memcg_id = sample->memcg_id;
+    e->trigger_tgid = sample->trigger_tgid;
+    e->trigger_tid = sample->trigger_tid;
+    __builtin_memcpy(e->trigger_comm, sample->trigger_comm, sizeof(e->trigger_comm));
+    e->seq_no = ++sample->replay_seq;
+    e->evict_round = state ? state->evict_round : sample->evict_round;
+    e->swappiness = sample->swappiness;
+    e->priority = sample->priority;
+    e->reclaim_idx = sample->reclaim_idx;
+    e->order = sample->order;
+    e->may_writepage = sample->may_writepage;
+    e->may_unmap = sample->may_unmap;
+    e->gfp_mask = sample->gfp_mask;
+    e->nr_to_reclaim = sample->nr_to_reclaim;
+    e->nr_reclaimed_before = state ? state->nr_reclaimed_before : -1;
+    e->nr_reclaimed_after = -1;
+    e->reclaimed_delta = 0;
+    e->type = state ? state->type : -1;
+    e->isolate_ret = state ? state->isolate_ret : -1;
+    e->min_seq_anon = sample->cached_min_seq_anon;
+    e->min_seq_file = sample->cached_min_seq_file;
+    e->max_seq = sample->cached_max_seq;
+
+    bpf_ringbuf_submit(e, 0);
+}
+
 SEC("kprobe/try_to_shrink_lruvec")
 int BPF_KPROBE(try_to_shrink_lruvec_enter, struct lruvec *lruvec, struct scan_control *sc)
 {
@@ -155,17 +226,36 @@ int BPF_KPROBE(try_to_shrink_lruvec_enter, struct lruvec *lruvec, struct scan_co
     target_memcg = BPF_CORE_READ(sc, target_mem_cgroup);
     sample->lruvec = lruvec;
     sample->sc = sc;
+    sample->session_id = bpf_ktime_get_ns();
     sample->memcg_id = get_memcg_id(target_memcg);
     sample->trigger_tgid = (u32)(pid_tgid >> 32);
     sample->trigger_tid = tid;
     bpf_get_current_comm(sample->trigger_comm, sizeof(sample->trigger_comm));
     sample->swappiness = -1;
+    sample->priority = BPF_CORE_READ(sc, priority);
+    sample->reclaim_idx = BPF_CORE_READ(sc, reclaim_idx);
+    sample->order = BPF_CORE_READ(sc, order);
+    sample->may_writepage = BPF_CORE_READ_BITFIELD_PROBED(sc, may_writepage);
+    sample->may_unmap = BPF_CORE_READ_BITFIELD_PROBED(sc, may_unmap);
+    sample->gfp_mask = BPF_CORE_READ(sc, gfp_mask);
+    sample->nr_to_reclaim = BPF_CORE_READ(sc, nr_to_reclaim);
+    sample->replay_seq = 0;
+    sample->evict_round = 0;
     sample->evict_folios_calls = 0;
+    sample->isolate_calls[0] = 0;
+    sample->isolate_calls[1] = 0;
+    sample->isolated_pages[0] = 0;
+    sample->isolated_pages[1] = 0;
+    sample->cached_min_seq_anon = 0;
+    sample->cached_min_seq_file = 0;
+    sample->cached_max_seq = 0;
     sample->reclaimed_pages[0] = 0;
     sample->reclaimed_pages[1] = 0;
     snapshot_lru_gen_folio(&sample->before, lruvec);
+    refresh_replay_position(sample, lruvec);
 
     bpf_map_update_elem(&active_tries, &tid, sample, BPF_ANY);
+    emit_replay_event(sample, NULL, MGLRU_STEP_TRY_TO_SHRINK_ENTER);
     return 0;
 }
 
@@ -180,6 +270,8 @@ int BPF_KRETPROBE(try_to_shrink_lruvec_exit)
     if (!sample)
         return 0;
 
+    emit_replay_event(sample, NULL, MGLRU_STEP_TRY_TO_SHRINK_EXIT);
+
     e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) {
         bpf_map_delete_elem(&active_tries, &tid);
@@ -187,15 +279,32 @@ int BPF_KRETPROBE(try_to_shrink_lruvec_exit)
         return 0;
     }
 
+    e->kind = MGLRU_EVENT_SUMMARY;
+    e->session_id = sample->session_id;
     e->memcg_id = sample->memcg_id;
     e->trigger_tgid = sample->trigger_tgid;
     e->trigger_tid = sample->trigger_tid;
     __builtin_memcpy(e->trigger_comm, sample->trigger_comm, sizeof(e->trigger_comm));
     e->swappiness = sample->swappiness;
+    e->priority = sample->priority;
+    e->reclaim_idx = sample->reclaim_idx;
+    e->order = sample->order;
+    e->may_writepage = sample->may_writepage;
+    e->may_unmap = sample->may_unmap;
+    e->gfp_mask = sample->gfp_mask;
+    e->nr_to_reclaim = sample->nr_to_reclaim;
     e->evict_folios_calls = sample->evict_folios_calls;
+    e->isolate_calls[0] = sample->isolate_calls[0];
+    e->isolate_calls[1] = sample->isolate_calls[1];
+    e->isolated_pages[0] = sample->isolated_pages[0];
+    e->isolated_pages[1] = sample->isolated_pages[1];
     e->target_reclaimed_anon_pages = sample->reclaimed_pages[0];
     e->target_reclaimed_file_pages = sample->reclaimed_pages[1];
     copy_snapshot(&e->before, &sample->before);
+    if (sample->lruvec)
+        snapshot_lru_gen_folio(&e->after, sample->lruvec);
+    else
+        copy_snapshot(&e->after, &sample->before);
 
     bpf_ringbuf_submit(e, 0);
     bpf_map_delete_elem(&active_tries, &tid);
@@ -214,6 +323,7 @@ int BPF_KRETPROBE(get_swappiness_exit, int ret)
         return 0;
 
     sample->swappiness = ret;
+    emit_replay_event(sample, NULL, MGLRU_STEP_GET_SWAPPINESS_EXIT);
     return 0;
 }
 
@@ -236,6 +346,8 @@ int BPF_KPROBE(evict_folios_enter, struct lruvec *lruvec, struct scan_control *s
         return 0;
 
     sample->evict_folios_calls++;
+    sample->evict_round++;
+    refresh_replay_position(sample, lruvec);
 
     state = bpf_map_lookup_elem(&evict_scratch, &zero);
     if (!state)
@@ -245,8 +357,11 @@ int BPF_KPROBE(evict_folios_enter, struct lruvec *lruvec, struct scan_control *s
     state->sc = sc;
     state->type_scanned = NULL;
     state->nr_reclaimed_before = BPF_CORE_READ(sc, nr_reclaimed);
+    state->isolate_ret = -1;
+    state->evict_round = sample->evict_round;
     state->type = -1;
     bpf_map_update_elem(&active_evictions, &tid, state, BPF_ANY);
+    emit_replay_event(sample, state, MGLRU_STEP_EVICT_FOLIOS_ENTER);
     return 0;
 }
 
@@ -256,6 +371,7 @@ int BPF_KPROBE(isolate_folios_enter, struct lruvec *lruvec, struct scan_control 
 {
     u32 tid = (u32)bpf_get_current_pid_tgid();
     struct evict_state *state;
+    struct try_sample *sample;
 
     (void)swappiness;
     (void)list;
@@ -268,6 +384,9 @@ int BPF_KPROBE(isolate_folios_enter, struct lruvec *lruvec, struct scan_control 
         return 0;
 
     state->type_scanned = type_scanned;
+    sample = bpf_map_lookup_elem(&active_tries, &tid);
+    if (sample)
+        refresh_replay_position(sample, lruvec);
     return 0;
 }
 
@@ -276,9 +395,8 @@ int BPF_KRETPROBE(isolate_folios_exit, int ret)
 {
     u32 tid = (u32)bpf_get_current_pid_tgid();
     struct evict_state *state;
+    struct try_sample *sample;
     int type = -1;
-
-    (void)ret;
 
     state = bpf_map_lookup_elem(&active_evictions, &tid);
     if (!state || !state->type_scanned)
@@ -288,6 +406,20 @@ int BPF_KRETPROBE(isolate_folios_exit, int ret)
         return 0;
 
     state->type = type;
+    state->isolate_ret = ret;
+    sample = bpf_map_lookup_elem(&active_tries, &tid);
+    if (sample) {
+        if (ret >= 0) {
+            if (type == 0) {
+                sample->isolate_calls[0]++;
+                sample->isolated_pages[0] += (unsigned long long)ret;
+            } else if (type == 1) {
+                sample->isolate_calls[1]++;
+                sample->isolated_pages[1] += (unsigned long long)ret;
+            }
+        }
+        emit_replay_event(sample, state, MGLRU_STEP_ISOLATE_FOLIOS_EXIT);
+    }
     return 0;
 }
 
@@ -321,6 +453,40 @@ int BPF_KRETPROBE(evict_folios_exit)
     delta = (unsigned long long)(nr_reclaimed_after - state->nr_reclaimed_before);
     if (delta && state->type >= 0 && state->type < MGLRU_MAX_TYPES)
         sample->reclaimed_pages[state->type] += delta;
+
+    {
+        struct mglru_replay_event *e;
+        e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+        if (e) {
+            e->kind = MGLRU_EVENT_REPLAY_STEP;
+            e->step_kind = MGLRU_STEP_EVICT_FOLIOS_EXIT;
+            e->session_id = sample->session_id;
+            e->ts_ns = bpf_ktime_get_ns();
+            e->memcg_id = sample->memcg_id;
+            e->trigger_tgid = sample->trigger_tgid;
+            e->trigger_tid = sample->trigger_tid;
+            __builtin_memcpy(e->trigger_comm, sample->trigger_comm, sizeof(e->trigger_comm));
+            e->seq_no = ++sample->replay_seq;
+            e->evict_round = state->evict_round;
+            e->swappiness = sample->swappiness;
+            e->priority = sample->priority;
+            e->reclaim_idx = sample->reclaim_idx;
+            e->order = sample->order;
+            e->may_writepage = sample->may_writepage;
+            e->may_unmap = sample->may_unmap;
+            e->gfp_mask = sample->gfp_mask;
+            e->nr_to_reclaim = sample->nr_to_reclaim;
+            e->nr_reclaimed_before = state->nr_reclaimed_before;
+            e->nr_reclaimed_after = nr_reclaimed_after;
+            e->reclaimed_delta = delta;
+            e->type = state->type;
+            e->isolate_ret = state->isolate_ret;
+            e->min_seq_anon = sample->cached_min_seq_anon;
+            e->min_seq_file = sample->cached_min_seq_file;
+            e->max_seq = sample->cached_max_seq;
+            bpf_ringbuf_submit(e, 0);
+        }
+    }
 
     bpf_map_delete_elem(&active_evictions, &tid);
     return 0;

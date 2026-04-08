@@ -1,2 +1,0 @@
-# mglru
-mglru project
