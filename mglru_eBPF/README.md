@@ -150,7 +150,7 @@ python validate_mglru_executor.py --csv output.csv
 验证指定 `trigger_comm`：
 
 ```bash
-python validate_mglru_executor.py --csv output.csv --trigger-comm kswapd1
+python validate_mglru_executor.py --csv output.csv --trigger-comm kswapd0
 ```
 
 验证全部样本：

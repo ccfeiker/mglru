@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-from mglru_executor import ExecutorConfig, exec_shrink_lruvec, load_case, to_range_label
+from mglru_project.mglru.mglru_eBPF.mglru_executor import ExecutorConfig, exec_shrink_lruvec, load_case, to_range_label
 
 
 DEFAULT_RELATIVE_TOLERANCE = 0.10
