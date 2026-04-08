@@ -1,5 +1,70 @@
 # MGLRU 解析模型说明
 
+## 1. eBPF 执行
+
+### 1.1 目录说明
+
+本目录下 eBPF 相关的核心文件包括：
+
+- `mglru_monitor.bpf.c`
+- `mglru_monitor.c`
+- `mglru_monitor.h`
+- `Makefile`
+
+其中：
+
+- `mglru_monitor.bpf.c` 负责在内核路径上采集事件
+- `mglru_monitor.c` 负责加载 eBPF、读取 ring buffer、导出 CSV 或 JSONL
+
+### 1.2 编译
+
+先进入当前目录：
+
+```bash
+cd mglru_eBPF
+```
+
+然后执行：
+
+```bash
+make
+```
+
+如果需要重新编译：
+
+```bash
+make clean
+make
+```
+
+### 1.3 运行
+
+直接启动 monitor：
+
+```bash
+sudo ./mglru_monitor
+```
+
+导出 `output.csv`：
+
+```bash
+sudo ./mglru_monitor output.csv
+```
+
+同时导出 `output.csv` 和 replay 过程：
+
+```bash
+sudo ./mglru_monitor output.csv replay.jsonl
+```
+
+`mglru_monitor.c` 当前支持的命令格式是：
+
+```bash
+./mglru_monitor [output.csv] [replay.jsonl]
+```
+
+## 2. 当前 MGLRU 解析模型
+
 本目录主要包含两个脚本：
 
 - `mglru_executor.py`
@@ -7,9 +72,7 @@
 
 它们共同组成了当前的 MGLRU 解析模型与验证流程。
 
-## 1. 当前 MGLRU 解析模型
-
-### 1.1 模型定位
+### 2.1 模型定位
 
 `mglru_executor.py` 是一个面向 MGLRU reclaim 路径的解析模型。
 
@@ -27,7 +90,7 @@
 - `min_seq` 如何变化
 - 每一轮执行过程中发生了哪些关键步骤
 
-### 1.2 核心思想
+### 2.2 核心思想
 
 当前模型的核心思路可以概括为：
 
@@ -42,7 +105,7 @@
 - 结构和 MGLRU 机制一致
 - 可以结合 trace 分析误差来源
 
-### 1.3 输入与输出
+### 2.3 输入与输出
 
 `mglru_executor.py` 的输入是一份 case JSON，里面通常包含：
 
@@ -62,9 +125,9 @@
 
 如果使用 `--json`，则会输出结构化结果；否则默认输出便于阅读的文本结果。
 
-## 2. `mglru_executor.py`
+## 3. `mglru_executor.py`
 
-### 2.1 功能
+### 3.1 功能
 
 `mglru_executor.py` 用来解析单个 case。
 
@@ -75,7 +138,7 @@
 - `min_seq` 变化
 - 执行 trace
 
-### 2.2 运行方式
+### 3.2 运行方式
 
 直接解析一个 case：
 
@@ -107,9 +170,9 @@ python mglru_executor.py --template
 python mglru_executor.py --help
 ```
 
-## 3. `validate_mglru_executor.py`
+## 4. `validate_mglru_executor.py`
 
-### 3.1 功能
+### 4.1 功能
 
 `validate_mglru_executor.py` 用来做批量验证。
 
@@ -122,7 +185,7 @@ python mglru_executor.py --help
 - 每条样本的验证结果 CSV
 - 汇总指标 JSON
 
-### 3.2 它和 `mglru_executor.py` 的关系
+### 4.2 它和 `mglru_executor.py` 的关系
 
 两者关系很简单：
 
@@ -139,7 +202,7 @@ output.csv
     -> per-row result / summary
 ```
 
-### 3.3 运行方式
+### 4.3 运行方式
 
 使用默认过滤条件运行：
 
@@ -173,5 +236,4 @@ python validate_mglru_executor.py \
 ```bash
 python validate_mglru_executor.py --help
 ```
-
 
