@@ -1,55 +1,61 @@
-# Traditional LRU eBPF 与解析模型说明
+# Traditional LRU eBPF Instrumentation and Parser Model
 
-## 1. 功能
+## 1. Overview
 
-本目录用于采集和解析 Linux 传统 LRU 路径上的 `shrink_lruvec()` 行为。
+This directory is used to collect and analyze the behavior of `shrink_lruvec()` on the Linux traditional LRU reclaim path.
 
-整体目标分成两部分：
+The overall workflow has two parts:
 
-- 用 eBPF 采集一次 `shrink_lruvec()` 的 summary 级信息
-- 用 `lru_executor.py` 根据这些信息对传统 LRU 路径进行解析建模，并预测 anon / file reclaim 数量
+- use eBPF to capture one `shrink_lruvec()` execution summary
+- use `lru_executor.py` to construct a parser model from the captured summary and predict anon/file reclaim counts
 
-当前模型的定位是：
+## 2. Directory Layout
 
-- `one CSV row == one shrink_lruvec() summary`
-- 面向传统 LRU 路径
-- 是源码驱动的 summary 级解析模型
-
-## 2. 说明
-
-本目录下的核心文件包括：
+The main files in this directory are:
 
 - `lru_monitor.bpf.c`
-  负责挂载 tracepoint / kprobe，采集传统 LRU reclaim 过程中的观测信息
+  Attaches tracepoints and kprobes to collect observable signals along the traditional LRU reclaim path.
 - `lru_monitor.c`
-  负责加载 eBPF、读取 ring buffer、导出 `lru_output.csv`
+  Loads the eBPF program, reads the ring buffer, and exports `lru_output.csv`.
 - `lru_monitor.h`
-  定义 eBPF 与用户态共享的 summary 事件结构 `struct lru_event`
+  Defines the summary event structure `struct lru_event` shared between eBPF and user space.
 - `lru_executor.py`
-  传统 LRU 解析模型执行器。输入单条 case，输出预测结果和解析 trace
+  The executor of the traditional LRU parser model. It takes one case as input and produces prediction results plus an execution trace.
 - `validate_lru_executor.py`
-  批量验证脚本。读取 `lru_output.csv`，逐行调用 `lru_executor.py` 做验证并汇总指标
+  Batch validation script. It reads `lru_output.csv`, invokes `lru_executor.py` row by row, and aggregates validation metrics.
 - `Makefile`
-  用于生成 `vmlinux.h`、编译 BPF 对象、生成 skeleton、链接用户态程序
-- `lru_output.csv`
-  monitor 导出的 summary 数据
+  Generates `vmlinux.h`, builds the BPF object, generates the skeleton, and links the user-space program.
 
-## 3. 修改 Linux 内核代码并添加 tracepoint
+## 3. Quick Start
 
-由于当前传统 LRU 解析模型需要额外的计划信息和 proportional adjust 信息，因此需要修改 Linux 内核代码，在 `vmscan` 路径中增加两个 tracepoint：
+To execute a single case:
+`python lru_executor.py lru_template_case/lru_case_sw100.json`
+
+To analyze a case captured from eBPF data:
+1. Modify and rebuild the kernel-side tracepoints.
+2. Run `make` in the `lru_parser_model` directory.
+3. Run `sudo ./lru_monitor lru_output.csv`.
+4. Run `python validate_lru_executor.py --csv lru_output.csv --trigger-comm kswapd0`.
+
+To analyze one specific sample from the captured eBPF dataset:
+`python lru_executor.py --csv lru_output.csv --line <line_no> --json`
+
+## 4. Modify the Linux Kernel and Add Tracepoints
+
+The current traditional LRU parser model requires additional planning information and proportional-adjust information. Therefore, two extra tracepoints need to be added to the Linux kernel reclaim path in `vmscan`:
 
 - `mm_vmscan_lru_plan`
 - `mm_vmscan_lru_adjust`
 
-### 3.1 修改 `vmscan.h`
+### 4.1 Modify `vmscan.h`
 
-文件位置：
+File location:
 
 ```text
-kernel-source/include/trace/events/vmscan.h
+[kernel-source]/include/trace/events/vmscan.h
 ```
 
-1. 在 `#define trace_reclaim_flags(file)` 后添加以下宏定义：
+1. Add the following macro definitions after `#define trace_reclaim_flags(file)`:
 
 ```c
 #define TRACE_LRU_PLAN_FLAG_MAY_DEACTIVATE_ANON (1U << 0)
@@ -68,7 +74,7 @@ kernel-source/include/trace/events/vmscan.h
 #define TRACE_LRU_SCAN_STATE_PROPORTIONAL       (1U << 5)
 ```
 
-2. 在 `TRACE_EVENT(mm_vmscan_lru_shrink_active, ...)` 结束后添加：
+2. Add the following block after `TRACE_EVENT(mm_vmscan_lru_shrink_active, ...)`:
 
 ```c
 TRACE_EVENT(mm_vmscan_lru_plan,
@@ -166,15 +172,15 @@ TRACE_EVENT(mm_vmscan_lru_adjust,
 );
 ```
 
-### 3.2 修改 `vmscan.c`
+### 4.2 Modify `vmscan.c`
 
-文件位置：
+File location:
 
 ```text
-kernel-source/mm/vmscan.c
+[kernel-source]/mm/vmscan.c
 ```
 
-1. 添加两个辅助函数：
+1. Add the following two helper functions:
 
 ```c
 static unsigned int trace_lru_plan_flags(struct scan_control *sc)
@@ -223,7 +229,7 @@ static unsigned int trace_lru_scan_state_flags(struct scan_control *sc,
 }
 ```
 
-2. 在 `shrink_lruvec()` 中新增局部变量和采集指标。先找到这段：
+2. Add local variables and collected metrics inside `shrink_lruvec()`. First locate:
 
 ```c
 static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
@@ -240,7 +246,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 }
 ```
 
-在这段后面添加：
+Then add the following immediately afterward:
 
 ```c
     unsigned long before[NR_LRU_LISTS] = { 0 };
@@ -257,7 +263,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
     can_reclaim_anon = can_reclaim_anon_pages(memcg, pgdat->node_id, sc);
 ```
 
-3. 在 `get_scan_count()` 和 `memcpy(targets, nr, sizeof(nr));` 后，新增 `mm_vmscan_lru_plan`。先找到：
+3. Add `mm_vmscan_lru_plan` after `get_scan_count()` and `memcpy(targets, nr, sizeof(nr));`. First locate:
 
 ```c
         get_scan_count(lruvec, sc, nr);
@@ -280,7 +286,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
                                 sc->priority == DEF_PRIORITY);
 ```
 
-在这段后面添加：
+Then add:
 
 ```c
     for_each_evictable_lru(lru)
@@ -297,7 +303,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
                  scan_state_flags, before, targets);
 ```
 
-4. 在 proportional reclaim 分支里，新增 `mm_vmscan_lru_adjust`。将当前这段：
+4. Add `mm_vmscan_lru_adjust` in the proportional reclaim branch. Replace the current block:
 
 ```c
     while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
@@ -372,7 +378,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
     }
 ```
 
-替换成：
+with:
 
 ```c
     while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
@@ -459,15 +465,15 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
     }
 ```
 
-### 3.3 重新编译内核并检查是否成功
+### 4.3 Rebuild the Kernel and Verify the Changes
 
-重新编译内核：
+Rebuild the kernel:
 
 ```bash
 make -j`nproc`
 ```
 
-检查 tracepoint 是否已经出现在系统中：
+Check whether the new tracepoints appear in the running system:
 
 ```bash
 root@syzkaller:~# cat /sys/kernel/tracing/available_events | grep mm_vmscan_lru_
@@ -478,37 +484,37 @@ vmscan:mm_vmscan_lru_shrink_inactive
 vmscan:mm_vmscan_lru_isolate
 ```
 
-如果存在：
+If the following entries are present:
 
 - `vmscan:mm_vmscan_lru_adjust`
 - `vmscan:mm_vmscan_lru_plan`
 
-则说明新增 hook 成功。
+then the new hooks have been added successfully.
 
-### 3.4 重新生成 `vmlinux.h` 并编译 eBPF
+### 4.4 Regenerate `vmlinux.h` and Rebuild eBPF
 
-内核更新后，需要重新生成 `vmlinux.h`，然后重新编译本目录下的 eBPF 程序。
+After the kernel is updated, you need to regenerate `vmlinux.h` and rebuild the eBPF program in this directory.
 
-例如：
+For example:
 
 ```bash
 root@syzkaller:~/libbpf-bootstrap/examples/lru_monitor# bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 ```
 
-随后回到本目录重新执行：
+Then return to this directory and run:
 
 ```bash
 make clean
 make
 ```
 
-## 4. eBPF 采集
+## 5. eBPF Data Collection
 
-### 4.1 采集内容
+### 5.1 Collected Information
 
-当前 summary case 主要包含以下几类信息：
+The summary data mainly contains the following categories:
 
-- reclaim 控制输入
+- reclaim control inputs
   - `swappiness`
   - `priority`
   - `reclaim_idx`
@@ -518,13 +524,13 @@ make
   - `may_writepage`
   - `may_unmap`
   - `may_swap`
-- traced `scan_control` 状态
+- traced `scan_control` states
   - `cgroup_reclaim`
   - `can_reclaim_anon`
   - `cache_trim_mode`
   - `file_is_tiny`
   - `memcg_low_reclaim`
-- before-state / target
+- before-state / target information
   - `before_*`
   - `target_*`
 - observed path activity
@@ -535,224 +541,219 @@ make
   - `observed_ref_keep_*`
   - `observed_dirty_*`
   - `observed_writeback_*`
-- proportional adjust 信息
+- proportional-adjust information
   - `observed_proportional_adjust_count`
   - `observed_proportional_adjust_percentage`
   - `observed_proportional_stopped_lru`
   - `observed_remaining_*`
 
-### 4.2 依赖
+### 5.2 Dependencies
 
-当前 `Makefile` 默认依赖 `libbpf-bootstrap`：
+The current `Makefile` assumes `libbpf-bootstrap` is available at:
 
 - `LIBBPF_BOOTSTRAP_ROOT := /root/libbpf-bootstrap`
 
-如果你的环境路径不同，需要先调整 `Makefile` 中这一项。
+If your environment uses a different path, update this entry in the `Makefile` first.
 
-### 4.3 编译
+### 5.3 Build
 
-先进入当前目录：
+Enter the current directory:
 
 ```bash
-cd lru_eBPF
+cd lru_parser_model
 ```
 
-然后执行：
+Then run:
 
 ```bash
 make
 ```
 
-如需重新生成：
+To regenerate all derived files:
 
 ```bash
 make clean
 make
 ```
 
-`make` 会完成这些工作：
+`make` performs the following steps:
 
-- 用 `bpftool` 从 `/sys/kernel/btf/vmlinux` 生成 `vmlinux.h`
-- 编译 `lru_monitor.bpf.c`
-- 生成 `lru_monitor.skel.h`
-- 链接得到用户态程序 `lru_monitor`
+- generate `vmlinux.h` from `/sys/kernel/btf/vmlinux` using `bpftool`
+- compile `lru_monitor.bpf.c`
+- generate `lru_monitor.skel.h`
+- link the user-space program `lru_monitor`
 
-### 4.4 运行
+### 5.4 Run
 
-直接启动 monitor：
+Start the monitor directly:
 
 ```bash
 sudo ./lru_monitor
 ```
 
-导出到 CSV：
+Export the output to CSV:
 
 ```bash
 sudo ./lru_monitor lru_output.csv
 ```
 
-当前 `lru_monitor` 的命令格式是：
+The command-line format of `lru_monitor` is:
 
 ```bash
 ./lru_monitor [lru_output.csv]
 ```
 
-## 5. 内核侧配合
+## 6. Kernel-Side Requirements
 
-当前这套传统 LRU 采集依赖两类内核事件：
+This traditional LRU collection pipeline depends on two classes of kernel events:
 
-- 已有事件
+- existing events
   - `mm_vmscan_lru_isolate`
   - `mm_vmscan_lru_shrink_inactive`
   - `mm_vmscan_lru_shrink_active`
-- 自定义事件
+- custom events
   - `mm_vmscan_lru_plan`
   - `mm_vmscan_lru_adjust`
 
-其中：
+Specifically:
 
-- `mm_vmscan_lru_plan` 用来导出 `get_scan_count()` 之后、进入扫描循环之前的计划信息
-- `mm_vmscan_lru_adjust` 用来导出 proportional reclaim adjust 的结果
+- `mm_vmscan_lru_plan` exports the planning state after `get_scan_count()` and before entering the scan loop
+- `mm_vmscan_lru_adjust` exports the result of proportional reclaim adjustment
 
-如果你修改了 `kernel-source/mm/vmscan.c` 或 `kernel-source/include/trace/events/vmscan.h`，通常需要同步做三件事：
+If you modify `[kernel-source]/mm/vmscan.c` or `[kernel-source]/include/trace/events/vmscan.h`, you usually need to do the following three things together:
 
-1. 重编内核
-2. 重新生成本目录下的 `vmlinux.h`
-3. 重新执行 `make`
+1. rebuild the kernel
+2. regenerate `vmlinux.h` in this directory
+3. run `make` again
 
-否则 BPF 侧结构和运行内核 ABI 可能不一致。
+Otherwise, the BPF-side structure definitions may become inconsistent with the ABI of the running kernel.
 
-## 6. `lru_executor.py`
+## 7. `lru_executor.py`
 
-### 6.1 功能
+### 7.1 Functionality
 
-`lru_executor.py` 用来解析单条 case。
+`lru_executor.py` analyzes one case at a time.
 
-它不会逐次重放 `shrink_lruvec()` 内部循环，而是基于 summary 级数据重建以下逻辑：
+It does not replay the internal `shrink_lruvec()` loop step by step. Instead, it reconstructs the following logic from summary-level data:
 
-- `get_scan_count()` 风格的 scan target 分配
-- active / inactive 路径预算
-- proportional reclaim adjust 的剩余量解释
-- anon / file reclaim 的最终预测
+- `get_scan_count()`-style scan target allocation
+- active/inactive path budgeting
+- interpretation of the remaining work after proportional reclaim adjustment
+- final anon/file reclaim prediction
 
-输出包括：
+Its outputs include:
 
 - `predicted_anon_pages`
 - `predicted_file_pages`
-- 误差分析
-- 详细 trace
+- error analysis
+- detailed trace
 
-### 6.2 运行方式
+### 7.2 Usage
 
-直接解析单个 JSON case：
-
-```bash
-python lru_executor.py selected_lru_case.json
-```
-
-输出 JSON：
+Analyze a single JSON case directly:
 
 ```bash
-python lru_executor.py selected_lru_case.json --json
+python lru_executor.py lru_template_case/lru_case_sw100.json
 ```
 
-从标准输入读取：
+Output JSON:
 
 ```bash
-python lru_executor.py --stdin --json < selected_lru_case.json
+python lru_executor.py lru_template_case/lru_case_sw100.json --json
 ```
 
-从 CSV 的指定行读取：
+Read from standard input:
+
+```bash
+python lru_executor.py --stdin --json < lru_template_case/lru_case_sw100.json
+```
+
+Read a specific line from a CSV file:
 
 ```bash
 python lru_executor.py --csv lru_output.csv --line 2 --json
 ```
 
-按 `session_id` 读取：
+Read by `session_id`:
 
 ```bash
 python lru_executor.py --csv lru_output.csv --session-id 123 --json
 ```
 
-打印模板 case：
+Print a template case:
 
 ```bash
 python lru_executor.py --template
 ```
 
-更多参数：
+More options:
 
 ```bash
 python lru_executor.py --help
 ```
 
-## 7. `validate_lru_executor.py`
+## 8. `validate_lru_executor.py`
 
-### 7.1 功能
+### 8.1 Functionality
 
-`validate_lru_executor.py` 用来做批量验证。
+`validate_lru_executor.py` performs batch validation.
 
-它会：
+It:
 
-- 读取 `lru_output.csv`
-- 每一行重建成 case
-- 调用 `lru_executor.py` 执行解析
-- 输出逐行结果 CSV
-- 输出汇总 JSON
-- 保存代表性 case
-- 保存 top error case
+- reads `lru_output.csv`
+- rebuilds each row into a case
+- invokes `lru_executor.py` to analyze each case
+- outputs a per-row result CSV
+- outputs a summary JSON
+- saves a representative case
+- saves the top-error cases
 
-### 7.2 输出文件
+### 8.2 Output Files
 
-默认会生成：
+By default, it generates:
 
 - `lru_executor_validation_results.csv`
-  每条样本的验证结果
+  Validation result for each sample.
 - `lru_executor_validation_summary.json`
-  汇总指标
-- `selected_lru_case.json`
-  代表性 case
+  Aggregated metrics.
+- `lru_template_case/lru_case_sw100.json`
+  Representative case.
 - `lru_executor_top_error_cases.json`
-  误差最大的 case 列表
+  List of cases with the largest prediction errors.
 
-注意：
+### 8.3 Usage
 
-- 默认终端输出和 `summary.json` 不再内嵌 `top_error_cases`
-- 如需在 summary 中显式包含它们，请加 `--include-top-error-cases`
-
-### 7.3 运行方式
-
-使用默认文件：
+Use the default input files:
 
 ```bash
 python validate_lru_executor.py
 ```
 
-验证指定 CSV：
+Validate a specific CSV file:
 
 ```bash
 python validate_lru_executor.py --csv lru_output.csv
 ```
 
-只验证 `kswapd0`：
+Validate only `kswapd0`:
 
 ```bash
 python validate_lru_executor.py --csv lru_output.csv --trigger-comm kswapd0
 ```
 
-验证全部触发进程：
+Validate all triggering processes:
 
 ```bash
 python validate_lru_executor.py --csv lru_output.csv --trigger-comm all
 ```
 
-限制样本数：
+Limit the number of samples:
 
 ```bash
 python validate_lru_executor.py --csv lru_output.csv --limit 1000
 ```
 
-在 summary 中包含 `top_error_cases`：
+Include `top_error_cases` in the summary:
 
 ```bash
 python validate_lru_executor.py \
@@ -760,18 +761,8 @@ python validate_lru_executor.py \
   --include-top-error-cases
 ```
 
-更多参数：
+More options:
 
 ```bash
 python validate_lru_executor.py --help
 ```
-
-## 8. 推荐工作流
-
-推荐按这个顺序使用：
-
-1. 修改并编译内核侧 tracepoint
-2. 在 `lru_eBPF` 目录执行 `make`
-3. 运行 `sudo ./lru_monitor lru_output.csv`
-4. 执行 `python validate_lru_executor.py --csv lru_output.csv --trigger-comm kswapd0`
-5. 如需深入分析单条样本，再执行 `python lru_executor.py --csv lru_output.csv --line <line_no> --json`
