@@ -23,7 +23,7 @@ The monitor requires the custom `mm_vmscan_lru_plan` and
 
 ## 4. Modify the Linux Kernel and Add Tracepoints
 
-The current traditional LRU parser model requires additional planning information and proportional-adjust information. Therefore, two extra tracepoints need to be added to the Linux kernel reclaim path in `vmscan`:
+The current traditional LRU analytical model requires additional planning information and proportional-adjust information. Therefore, two extra tracepoints need to be added to the Linux kernel reclaim path in `vmscan`:
 
 - `mm_vmscan_lru_plan`
 - `mm_vmscan_lru_adjust`
