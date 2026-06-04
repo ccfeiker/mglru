@@ -1,0 +1,135 @@
+{
+  "reclaim_context": "kswapd",
+  "trigger_comm": "kswapd0",
+  "swappiness": 30,
+  "memory_reclaim_type": "global reclaim",
+  "memcg_id": 27,
+  "memcg_path": "/active_aging_cgroup",
+  "node_id": 0,
+  "max_seq": 3,
+  "min_seq_anon": 0,
+  "min_seq_file": 0,
+  "anon_gens": [
+    {
+      "seq": 0,
+      "pages": 0
+    },
+    {
+      "seq": 1,
+      "pages": 0
+    },
+    {
+      "seq": 2,
+      "pages": 0
+    },
+    {
+      "seq": 3,
+      "pages": 148841
+    }
+  ],
+  "file_gens": [
+    {
+      "seq": 0,
+      "pages": 0
+    },
+    {
+      "seq": 1,
+      "pages": 17728
+    },
+    {
+      "seq": 2,
+      "pages": 0
+    },
+    {
+      "seq": 3,
+      "pages": 39050
+    }
+  ],
+  "priority": 12,
+  "reclaim_idx": 0,
+  "order": 0,
+  "gfp_io": true,
+  "gfp_mask": 32,
+  "nr_to_reclaim": 10000,
+  "observed_evict_folios_calls": null,
+  "observed_isolate_calls_anon": null,
+  "observed_isolate_calls_file": null,
+  "observed_after_min_seq_anon": null,
+  "observed_after_min_seq_file": null,
+  "observed_after_max_seq": null,
+  "may_swap": true,
+  "may_writepage": true,
+  "may_unmap": true,
+  "avg_refaulted_anon": 0,
+  "avg_refaulted_file": 0,
+  "avg_total_anon": 0,
+  "avg_total_file": 0,
+  "protected_anon_pages": 0,
+  "protected_file_pages": 0,
+  "evicted_anon_pages": 0,
+  "evicted_file_pages": 0,
+  "refaulted_anon_pages": 0,
+  "refaulted_file_pages": 0,
+  "avg_refaulted_anon_tiers": [
+    100,
+    0,
+    0,
+    0
+  ],
+  "avg_refaulted_file_tiers": [
+    100,
+    0,
+    0,
+    0
+  ],
+  "avg_total_anon_tiers": [
+    300000,
+    0,
+    0,
+    0
+  ],
+  "avg_total_file_tiers": [
+    1000,
+    0,
+    0,
+    0
+  ],
+  "protected_anon_tiers": [
+    0,
+    0,
+    0
+  ],
+  "protected_file_tiers": [
+    0,
+    0,
+    0
+  ],
+  "evicted_anon_tiers": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "evicted_file_tiers": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "refaulted_anon_tiers": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "refaulted_file_tiers": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "min_nr_gens": 2,
+  "max_swappiness": 200,
+  "observed_isolate_scanned_anon_pages": null,
+  "observed_isolate_scanned_file_pages": null
+}
